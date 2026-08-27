@@ -137,7 +137,7 @@
 			attributes = {
 				BuildIndependentTargetsInParallel = 1;
 				LastSwiftUpdateCheck = 1610;
-				LastUpgradeCheck = 2650;
+				LastUpgradeCheck = 2660;
 				TargetAttributes = {
 					EBFDAFBC2CEB98C8007CBD1F = {
 						CreatedOnToolsVersion = 16.1;
@@ -365,7 +365,7 @@
 				CODE_SIGN_ENTITLEMENTS = WarDragon/WarDragon.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 4.3.9;
+				CURRENT_PROJECT_VERSION = 4.4.0;
 				DEAD_CODE_STRIPPING = YES;
 				DEVELOPMENT_ASSET_PATHS = "\"WarDragon/Preview Content\"";
 				DEVELOPMENT_TEAM = A64B5QV548;
@@ -419,7 +419,7 @@
 				CODE_SIGN_ENTITLEMENTS = WarDragon/WarDragon.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 4.3.9;
+				CURRENT_PROJECT_VERSION = 4.4.0;
 				DEAD_CODE_STRIPPING = YES;
 				DEVELOPMENT_ASSET_PATHS = "\"WarDragon/Preview Content\"";
 				DEVELOPMENT_TEAM = A64B5QV548;
