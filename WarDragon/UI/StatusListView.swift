@@ -19,6 +19,9 @@ struct StatusListView: View {
     }
     
     var body: some View {
+        #if DEBUG
+        let _ = PerfHeartbeat.shared.count("StatusListView")
+        #endif
         systemStatusView
             .navigationTitle("Status")
             .navigationBarTitleDisplayMode(.large)
@@ -82,10 +85,6 @@ struct StatusListView: View {
                         }
                     }
                 }
-                .onReceive(Timer.publish(every: 1, on: .main, in: .common).autoconnect()) { _ in
-                    // Force UI update every second to refresh "last received" times
-                    statusViewModel.objectWillChange.send()
-                }
             }
         }
     }
@@ -94,7 +93,8 @@ struct StatusListView: View {
 // MARK: - Connection Status Header
 struct StatusConnectionHeaderView: View {
     @ObservedObject var statusViewModel: StatusViewModel
-    
+    @State private var clockTick = Date()
+
     var body: some View {
         VStack(spacing: 12) {
             HStack {
@@ -155,6 +155,9 @@ struct StatusConnectionHeaderView: View {
                 connectionQualityView
             }
         }
+        .onReceive(Timer.publish(every: 1, on: .main, in: .common).autoconnect()) { tick in
+            clockTick = tick
+        }
         .padding()
         .background(
             LinearGradient(
@@ -188,7 +191,7 @@ struct StatusConnectionHeaderView: View {
             return (0, .red)
         }
         
-        let timeSinceLastMessage = Date().timeIntervalSince(lastReceived)
+        let timeSinceLastMessage = clockTick.timeIntervalSince(lastReceived)
         
         switch timeSinceLastMessage {
         case 0..<90:        // Less than 1.5 minutes - excellent

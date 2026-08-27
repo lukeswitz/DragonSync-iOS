@@ -14,11 +14,14 @@ import SwiftUI
 import Combine
 
 class CoTViewModel: ObservableObject, @unchecked Sendable {
-    @Published var parsedMessages: [CoTMessage] = []
-    @Published var droneSignatures: [DroneSignature] = []
-    @Published var randomMacIdHistory: [String: Set<String>] = [:]
-    @Published var alertRings: [AlertRing] = []
-    @Published private(set) var isReconnecting = false
+    let objectWillChange = ObservableObjectPublisher()
+    var parsedMessages: [CoTMessage] = [] { didSet { scheduleUIRefresh() } }
+    var droneSignatures: [DroneSignature] = [] { didSet { scheduleUIRefresh() } }
+    var randomMacIdHistory: [String: Set<String>] = [:] { didSet { scheduleUIRefresh() } }
+    var alertRings: [AlertRing] = [] { didSet { scheduleUIRefresh() } }
+    private(set) var isReconnecting = false { didSet { scheduleUIRefresh() } }
+    private var uiRefreshPending = false
+    private let uiRefreshInterval: TimeInterval = 0.25
     private var lastProcessTime = Date.distantPast
     private var isInBackground = false
     private let signatureGenerator = DroneSignatureGenerator()
@@ -83,7 +86,7 @@ class CoTViewModel: ObservableObject, @unchecked Sendable {
     // MARK: - ADS-B Integration
     private var adsbClient: ADSBClient?
     private var adsbCancellables = Set<AnyCancellable>()  // Separate cancellables for ADS-B to prevent interference
-    @Published var aircraftTracks: [Aircraft] = []
+    var aircraftTracks: [Aircraft] = [] { didSet { scheduleUIRefresh() } }
     
     /// Unified detection statistics
     struct DetectionStats {
@@ -858,6 +861,16 @@ class CoTViewModel: ObservableObject, @unchecked Sendable {
         print("CoTViewModel cleanup completed")
     }
     
+    nonisolated private func scheduleUIRefresh() {
+        Task { @MainActor [weak self] in
+            guard let self, !self.uiRefreshPending else { return }
+            self.uiRefreshPending = true
+            try? await Task.sleep(nanoseconds: UInt64(self.uiRefreshInterval * 1_000_000_000))
+            self.uiRefreshPending = false
+            self.objectWillChange.send()
+        }
+    }
+
     /// Update cached settings values - call this when settings change
     @MainActor
     private func updateCachedSettings() {
@@ -1386,6 +1399,23 @@ class CoTViewModel: ObservableObject, @unchecked Sendable {
     
     private func startZMQListening() {
         zmqHandler = ZMQHandler.shared
+
+        let handler = zmqHandler
+        let host = cachedZmqHost
+        let telemetryPort = cachedZmqTelemetryPort
+        let statusPort = cachedZmqStatusPort
+
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self else { return }
+            self.performZMQConnect(handler, host, telemetryPort, statusPort)
+        }
+    }
+
+    private func performZMQConnect(_ handler: ZMQHandler?,
+                                   _ cachedZmqHost: String,
+                                   _ cachedZmqTelemetryPort: UInt16,
+                                   _ cachedZmqStatusPort: UInt16) {
+        let zmqHandler = handler
 
         zmqHandler?.connect(
             host: cachedZmqHost,
@@ -1995,14 +2025,14 @@ class CoTViewModel: ObservableObject, @unchecked Sendable {
             // Clear existing alert rings
             alertRings.removeAll()
             
-            // Get all encounters from storage
-            let allEncounters = DroneStorageManager.shared.fetchAllEncounters()
-            
+            // Lightweight fetch: relationships are only faulted for the few
+            // encounters that actually carry proximity points.
+            let allEncounters = SwiftDataStorageManager.shared.fetchAllEncountersLightweight()
+                .filter { $0.metadata["hasProximityPoints"] == "true" }
+
             // Restore alert rings for FPV and encrypted signals from storage
             for encounter in allEncounters {
                 let droneId = encounter.id
-                // Only process encounters that have proximity points
-                guard encounter.metadata["hasProximityPoints"] == "true" else { continue }
                 
                 // Get all proximity points with RSSI data
                 let proximityPoints = encounter.flightPath.filter {
@@ -2190,7 +2220,7 @@ class CoTViewModel: ObservableObject, @unchecked Sendable {
     private func processIncomingMessage(_ data: Data) {
         guard let message = String(data: data, encoding: .utf8) else { return }
         
-        print("DEBUG: incoming message: \(message)")
+        if BackgroundDiagnostics.isEnabled { print("DEBUG: incoming message: \(message)") }
         
         // MARK: Check for FPV messages FIRST - Parse JSON to verify structure
         // Check for single object with AUX_ADV_IND (FPV update format)
@@ -2640,8 +2670,10 @@ class CoTViewModel: ObservableObject, @unchecked Sendable {
         let trackSpeed = message.trackSpeed ?? "0.0"
         let trackCourse = message.trackCourse ?? "0.0"
         
-        print("DEBUG: Track data from message - Speed: \(String(describing: message.trackSpeed)), Course: \(String(describing: message.trackCourse))")
-        print("DEBUG: Track data after defaults - Speed: \(trackSpeed), Course: \(trackCourse)")
+        if BackgroundDiagnostics.isEnabled {
+            print("DEBUG: Track data from message - Speed: \(String(describing: message.trackSpeed)), Course: \(String(describing: message.trackCourse))")
+            print("DEBUG: Track data after defaults - Speed: \(trackSpeed), Course: \(trackCourse)")
+        }
         
         // Prepare updated message
         var updatedMessage = message
@@ -2941,27 +2973,30 @@ class CoTViewModel: ObservableObject, @unchecked Sendable {
         Task { @MainActor in
             if let index = self.droneSignatures.firstIndex(where: { $0.primaryId.id == signature.primaryId.id }) {
                 self.droneSignatures[index] = signature
-                print("DEBUG:  Updated existing signature for \(signature.primaryId.id)")
             } else {
-                print("DEBUG:  Added new signature for \(signature.primaryId.id)")
                 self.droneSignatures.append(signature)
             }
-            
+
             let currentMonitorStatus = self.statusViewModel.statusMessages.last
-            
+
             DroneStorageManager.shared.saveEncounter(message, monitorStatus: currentMonitorStatus)
-            
+
             SwiftDataStorageManager.shared.logActivityForEncounter(id: signature.primaryId.id, timestamp: Date())
-            
+
+            DetectionViewCache.shared.invalidate(signature.primaryId.id)
+
+            guard BackgroundDiagnostics.isEnabled else { return }
+
             guard let existing = DroneStorageManager.shared.fetchEncounter(id: signature.primaryId.id) else {
                 print("⚠️ Encounter not found for signature: \(signature.primaryId.id) - skipping position check")
                 return
             }
-            
-            let hasNewPosition = existing.flightPath.last?.latitude != signature.position.coordinate.latitude ||
-            existing.flightPath.last?.longitude != signature.position.coordinate.longitude ||
-            existing.flightPath.last?.altitude != signature.position.altitude
-            
+
+            let lastPoint = existing.flightPoints.last
+            let hasNewPosition = lastPoint?.latitude != signature.position.coordinate.latitude ||
+            lastPoint?.longitude != signature.position.coordinate.longitude ||
+            lastPoint?.altitude != signature.position.altitude
+
             if hasNewPosition {
                 print("DEBUG:  Added new position to existing encounter: \(signature.primaryId.id)")
             } else {
@@ -3138,9 +3173,6 @@ class CoTViewModel: ObservableObject, @unchecked Sendable {
                     messageToProcess.customName = storedEncounter.customName
                 }
                 messageToProcess.trustStatus = storedEncounter.trustStatus
-                storedEncounter.addCurrentSession()
-                storedEncounter.logActivity(timestamp: Date())
-                try? SwiftDataStorageManager.shared.modelContext?.save()
             }
             
             self.applyStoredDataAndUpdate(messageToProcess, signature)

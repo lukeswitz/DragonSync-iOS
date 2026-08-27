@@ -138,8 +138,8 @@ struct MessageRow: View, Equatable {
     let message: CoTViewModel.CoTMessage
     let cotViewModel: CoTViewModel
     let isCompact: Bool
-    @State private var droneEncounter: StoredDroneEncounter?
-    @State private var droneSignature: DroneSignature?
+    @State private var droneEncounter: StoredDroneEncounter? = nil
+    @State private var droneSignature: DroneSignature? = nil
     @State private var activeSheet: SheetType?
     @State private var showingSaveConfirmation = false
     @State private var showingDeleteConfirmation = false
@@ -169,8 +169,6 @@ struct MessageRow: View, Equatable {
         self.message = message
         self.cotViewModel = cotViewModel
         self.isCompact = isCompact
-        _droneEncounter = State(initialValue: SwiftDataStorageManager.shared.fetchEncounter(id: message.uid))
-        _droneSignature = State(initialValue: cotViewModel.droneSignatures.first(where: { $0.primaryId.id == message.uid }))
     }
     
     enum SheetType: Identifiable {
@@ -249,7 +247,7 @@ struct MessageRow: View, Equatable {
     }
     
     private var currentEncounter: StoredDroneEncounter? {
-        droneEncounter
+        droneEncounter ?? DetectionViewCache.shared.encounter(for: message.uid)
     }
     
     private var signature: DroneSignature? {
@@ -840,8 +838,8 @@ struct MessageRow: View, Equatable {
 //                .frame(height: 80)
             }
         } else {
-            let encounter = SwiftDataStorageManager.shared.fetchEncounter(id: message.uid)
-            
+            let encounter = currentEncounter
+
             let validCoordinate: CLLocationCoordinate2D? = {
                 guard let coord = message.coordinate else { return nil }
                 let lat = coord.latitude
@@ -1094,6 +1092,9 @@ struct MessageRow: View, Equatable {
     // MARK: - Main View
     
     var body: some View {
+        #if DEBUG
+        let _ = PerfHeartbeat.shared.count("MessageRow")
+        #endif
         if isCompact {
             compactView
         } else {
@@ -1372,7 +1373,7 @@ struct MessageRow: View, Equatable {
         guard !isEditingThisDrone else { return }
         
         // Update encounter and signature data
-        let newEncounter = SwiftDataStorageManager.shared.fetchEncounter(id: message.uid)
+        let newEncounter = DetectionViewCache.shared.encounter(for: message.uid)
         if droneEncounter?.id != newEncounter?.id || 
            droneEncounter?.customName != newEncounter?.customName ||
            droneEncounter?.trustStatus != newEncounter?.trustStatus {

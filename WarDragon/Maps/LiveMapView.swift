@@ -56,17 +56,7 @@ struct LiveMapView: View {
         let lat = Double(initialMessage.lat) ?? 0
         let lon = Double(initialMessage.lon) ?? 0
         
-        var initialFlightPaths: [String: [(coordinate: CLLocationCoordinate2D, timestamp: Date)]] = [:]
-        for encounter in DroneStorageManager.shared.fetchAllEncounters() {
-            let droneId = encounter.id
-            let pathPoints = encounter.flightPath.map { point in
-                (coordinate: point.coordinate, timestamp: Date(timeIntervalSince1970: point.timestamp))
-            }
-            if !pathPoints.isEmpty {
-                initialFlightPaths[droneId] = pathPoints
-            }
-        }
-        _flightPaths = State(initialValue: initialFlightPaths)
+        _flightPaths = State(initialValue: [:])
         
         // Try to fit all visible targets (drones + aircraft) based on filter mode
         var allCoords: [CLLocationCoordinate2D] = []
@@ -225,17 +215,12 @@ struct LiveMapView: View {
     }
     
     private func getValidFlightPath(for uid: String) -> [CLLocationCoordinate2D] {
-        guard let encounter = DroneStorageManager.shared.fetchEncounter(id: uid) else {
+        let cached = DetectionViewCache.shared.flightPath(for: uid)
+        if cached.isEmpty {
             guard let path = flightPaths[uid] else { return [] }
             return path.compactMap { $0.coordinate.isValid ? $0.coordinate : nil }
         }
-        
-        let sortedPoints = encounter.flightPath
-            .filter { !$0.isProximityPoint }
-            .filter { !($0.latitude == 0 && $0.longitude == 0) }
-            .sorted { $0.timestamp < $1.timestamp }
-        
-        return sortedPoints.map { $0.coordinate }
+        return cached
     }
     
     private func getValidFlightPathWithCurrent(for drone: CoTViewModel.CoTMessage) -> [CLLocationCoordinate2D] {

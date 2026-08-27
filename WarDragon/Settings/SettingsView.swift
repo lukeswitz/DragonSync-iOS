@@ -16,6 +16,9 @@ struct SettingsView: View {
     @StateObject private var openSkyService = OpenSkyService.shared
     
     var body: some View {
+        #if DEBUG
+        let _ = PerfHeartbeat.shared.count("SettingsView")
+        #endif
         Form {
             Section("Connection") {
                 HStack {
@@ -230,6 +233,11 @@ struct SettingsView: View {
                     }
                 }
 
+                Toggle("Background Diagnostics Logging", isOn: Binding(
+                    get: { settings.backgroundDiagnosticsEnabled },
+                    set: { settings.backgroundDiagnosticsEnabled = $0 }
+                ))
+
                 NavigationLink {
                     BackgroundDiagnosticsView()
                 } label: {
@@ -244,6 +252,7 @@ struct SettingsView: View {
                         }
                     }
                 }
+                .disabled(!settings.backgroundDiagnosticsEnabled)
             }
             
             Section("Warning Thresholds") {
@@ -430,6 +439,48 @@ struct SettingsView: View {
                 }
             }
             
+            Section("Flight Path Storage") {
+                ThresholdSlider(
+                    title: "Points Kept Per Drone",
+                    value: Binding(
+                        get: { Double(settings.flightPointRetentionLimit) },
+                        set: { settings.flightPointRetentionLimit = Int($0) }
+                    ),
+                    range: 100...5000,
+                    step: 100,
+                    unit: " pts",
+                    color: .blue
+                )
+
+                ThresholdSlider(
+                    title: "Min Interval Between Points",
+                    value: Binding(
+                        get: { settings.flightPointMinIntervalSeconds },
+                        set: { settings.flightPointMinIntervalSeconds = $0 }
+                    ),
+                    range: 1...60,
+                    step: 1,
+                    unit: "s",
+                    color: .blue
+                )
+
+                ThresholdSlider(
+                    title: "Min Movement Between Points",
+                    value: Binding(
+                        get: { settings.flightPointMinDistanceMeters },
+                        set: { settings.flightPointMinDistanceMeters = $0 }
+                    ),
+                    range: 0...100,
+                    step: 1,
+                    unit: "m",
+                    color: .blue
+                )
+
+                Text("A point is stored when the drone moves past the distance OR the interval elapses. 0m records any movement. Oldest points beyond the limit are deleted.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+
             Section("Data Management") {
                 NavigationLink {
                     DatabaseManagementView()

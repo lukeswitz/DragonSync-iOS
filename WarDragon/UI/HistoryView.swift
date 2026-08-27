@@ -13,10 +13,17 @@ import MapKit
 import CoreLocation
 
 struct StoredEncountersView: View {
-    @Query(
-        sort: \StoredDroneEncounter.lastSeen, 
-        order: .reverse
-    ) private var encounters: [StoredDroneEncounter]
+    @Query(Self.recentEncounters) private var encounters: [StoredDroneEncounter]
+
+    /// Newest first, bounded. An unbounded query materializes every stored
+    /// encounter each time the tab is built.
+    private static var recentEncounters: FetchDescriptor<StoredDroneEncounter> {
+        var descriptor = FetchDescriptor<StoredDroneEncounter>(
+            sortBy: [SortDescriptor(\.lastSeen, order: .reverse)]
+        )
+        descriptor.fetchLimit = 500
+        return descriptor
+    }
     
     @State private var showingDeleteConfirmation = false
     @State private var searchText = ""
@@ -162,6 +169,9 @@ struct StoredEncountersView: View {
     }
     
     var body: some View {
+        #if DEBUG
+        let _ = PerfHeartbeat.shared.count("StoredEncountersView")
+        #endif
         List {
             // MARK: - Aircraft History Section
             Section {
@@ -668,6 +678,7 @@ struct StoredEncountersView: View {
         @Environment(\.modelContext) private var modelContext
         @State private var showingDeleteConfirmation = false
         @State private var showFlightPath = true
+        @State private var showReplay = false
         @State private var selectedMapType: MapStyle = .standard
         @State private var mapCameraPosition: MapCameraPosition = .automatic
         @EnvironmentObject var cotViewModel: CoTViewModel
@@ -685,6 +696,15 @@ struct StoredEncountersView: View {
         @State private var cachedPilotItems: [MapPointItem] = []
         @State private var cachedHomeItems: [MapPointItem] = []
         @State private var lastSignatureHash: Int = 0
+        @State private var cachedSmoothedDronePath: [CLLocationCoordinate2D] = []
+        @State private var lastDronePathCount: Int = -1
+
+        /// Catmull-Rom emits 5x the input points. Long paths are drawn raw so a
+        /// retained 5000-point flight cannot become a 25000-coordinate polyline.
+        private static func smoothed(_ coords: [CLLocationCoordinate2D]) -> [CLLocationCoordinate2D] {
+            guard coords.count > 2, coords.count <= 600 else { return coords }
+            return FlightPathSmoother.smoothPath(coords, smoothness: 4)
+        }
         
         enum MapStyle {
             case standard, satellite, hybrid
@@ -890,11 +910,33 @@ struct StoredEncountersView: View {
                 .padding()
             }
             .navigationTitle("Encounter Details")
+            .sheet(isPresented: $showReplay) {
+                NavigationStack {
+                    FlightReplayView(
+                        title: encounter.customName.isEmpty ? encounter.id : encounter.customName,
+                        dronePath: replayDronePath,
+                        operatorPath: replayOperatorPath,
+                        homeCoordinate: encounter.homeLocations
+                            .sorted { $0.timestamp < $1.timestamp }
+                            .last
+                            .map { CLLocationCoordinate2D(latitude: $0.latitude, longitude: $0.longitude) }
+                    )
+                }
+            }
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Menu {
+                        Button {
+                            showReplay = true
+                        } label: {
+                            Label("Replay Flight", systemImage: "play.circle")
+                        }
+                        .disabled(replayDronePath.count < 2)
+
+                        Divider()
+
                         Toggle("Show Flight Path", isOn: $showFlightPath)
-                        
+
                         Divider()
                         
                         Picker("Map Style", selection: $selectedMapType) {
@@ -974,6 +1016,18 @@ struct StoredEncountersView: View {
                 pilotItems = cachedPilotItems
                 homeItems = cachedHomeItems
             }
+
+            let smoothedDronePath: [CLLocationCoordinate2D]
+            if droneFlightPoints.count != lastDronePathCount {
+                let computed = Self.smoothed(droneFlightPoints.map { $0.coordinate })
+                smoothedDronePath = computed
+                DispatchQueue.main.async {
+                    cachedSmoothedDronePath = computed
+                    lastDronePathCount = droneFlightPoints.count
+                }
+            } else {
+                smoothedDronePath = cachedSmoothedDronePath
+            }
             
             let alertRings = cotViewModel.alertRings.filter { ring in
                 ring.droneId == encounter.id ||
@@ -1028,8 +1082,7 @@ struct StoredEncountersView: View {
                 // Regular drone flight path
                 Group {
                     if !isFPVEncounter && showFlightPath && droneFlightPoints.count > 1 {
-                        let smoothedPath = FlightPathSmoother.smoothPath(droneFlightPoints.map { $0.coordinate }, smoothness: 4)
-                        MapPolyline(coordinates: smoothedPath)
+                        MapPolyline(coordinates: smoothedDronePath)
                             .stroke(.blue, style: StrokeStyle(lineWidth: 3, lineCap: .round, lineJoin: .round))
                     }
                     
@@ -1060,7 +1113,7 @@ struct StoredEncountersView: View {
                     
                     // Draw operator movement trail if multiple positions
                     if pilotCoordinates.count > 1 {
-                        let smoothedPath = FlightPathSmoother.smoothPath(pilotCoordinates, smoothness: 4)
+                        let smoothedPath = Self.smoothed(pilotCoordinates)
                         MapPolyline(coordinates: smoothedPath)
                             .stroke(
                                 LinearGradient(
@@ -1222,7 +1275,7 @@ struct StoredEncountersView: View {
                 let recentPoints = Array(points.suffix(segmentSize))
                 if recentPoints.count > 1 {
                     // Smooth recent path segment
-                    let smoothedRecent = FlightPathSmoother.smoothPath(recentPoints.map { $0.coordinate }, smoothness: 4)
+                    let smoothedRecent = Self.smoothed(recentPoints.map { $0.coordinate })
                     MapPolyline(coordinates: smoothedRecent)
                         .stroke(.red, style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
                 }
@@ -1233,7 +1286,7 @@ struct StoredEncountersView: View {
                     let middlePoints = Array(points[startIndex..<endIndex])
                     if middlePoints.count > 1 {
                         // Smooth middle path segment
-                        let smoothedMiddle = FlightPathSmoother.smoothPath(middlePoints.map { $0.coordinate }, smoothness: 4)
+                        let smoothedMiddle = Self.smoothed(middlePoints.map { $0.coordinate })
                         MapPolyline(coordinates: smoothedMiddle)
                             .stroke(.orange, style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
                     }
@@ -1311,6 +1364,28 @@ struct StoredEncountersView: View {
             .padding()
             .background(Color(UIColor.secondarySystemBackground))
             .cornerRadius(12)
+        }
+
+        private var replayDronePath: [FlightReplaySample] {
+            flightPoints
+                .filter { !$0.isProximityPoint && !($0.latitude == 0 && $0.longitude == 0) }
+                .sorted { $0.timestamp < $1.timestamp }
+                .map {
+                    FlightReplaySample(coordinate: $0.coordinate,
+                                       altitude: $0.altitude,
+                                       timestamp: $0.timestamp)
+                }
+        }
+
+        private var replayOperatorPath: [FlightReplaySample] {
+            encounter.operatorLocations
+                .filter { !($0.latitude == 0 && $0.longitude == 0) }
+                .sorted { $0.timestamp < $1.timestamp }
+                .map {
+                    FlightReplaySample(coordinate: $0.coordinate,
+                                       altitude: $0.altitude ?? 0,
+                                       timestamp: $0.timestamp)
+                }
         }
 
         private func loadRelationshipData() async {

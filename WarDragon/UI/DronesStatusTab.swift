@@ -58,6 +58,9 @@ struct DronesStatusTab: View {
     }
     
     var body: some View {
+        #if DEBUG
+        let _ = PerfHeartbeat.shared.count("DronesStatusTab")
+        #endif
         // Main list
         if cotViewModel.parsedMessages.isEmpty {
             emptyStateView
@@ -316,14 +319,14 @@ struct DronesStatusTab: View {
                     y: .value("Count", point.count)
                 )
                 .foregroundStyle(.blue)
-                .interpolationMethod(.catmullRom)
+                .interpolationMethod(.monotone)
                 
                 AreaMark(
                     x: .value("Time", point.time),
                     y: .value("Count", point.count)
                 )
                 .foregroundStyle(.blue.opacity(0.1))
-                .interpolationMethod(.catmullRom)
+                .interpolationMethod(.monotone)
             }
             .frame(height: 100)
             .chartXAxis {
@@ -723,6 +726,9 @@ private struct CompactMapView: View {
     }
     
     var body: some View {
+        #if DEBUG
+        let _ = PerfHeartbeat.shared.count("CompactMapView")
+        #endif
         Map(position: $mapCameraPosition, interactionModes: .all) {
             if let mon = monitorLocation {
                 Annotation("Monitor", coordinate: mon) {
@@ -769,7 +775,7 @@ private struct CompactMapView: View {
             if showPaths {
                 ForEach(drones, id: \.uid) { drone in
                     if let path = getPath(for: drone), path.count > 1 {
-                        let smoothedPath = FlightPathSmoother.smoothPath(path, smoothness: 4)
+                        let smoothedPath = DetectionViewCache.shared.smoothedFlightPath(for: drone.uid)
                         MapPolyline(coordinates: smoothedPath)
                             .stroke(.blue, style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
                     }
@@ -898,10 +904,8 @@ private struct CompactMapView: View {
     }
     
     private func getPath(for drone: CoTViewModel.CoTMessage) -> [CLLocationCoordinate2D]? {
-        guard let encounter = DroneStorageManager.shared.fetchEncounter(id: drone.uid) else { return nil }
-        return encounter.flightPath.filter { !$0.isProximityPoint && !($0.latitude == 0 && $0.longitude == 0) }
-            .sorted { $0.timestamp < $1.timestamp }
-            .map { $0.coordinate }
+        let path = DetectionViewCache.shared.flightPath(for: drone.uid)
+        return path.isEmpty ? nil : path
     }
 }
 

@@ -134,9 +134,8 @@ struct DetectionsStatsView: View {
             return (start, end)
         }
         
-        return buckets.map { bucket in
-            var avgRSSI: Double = -100.0
-            let avgAltitude: Double = 0.0  // Changed to 'let' since it's never mutated
+        let raw: [Double?] = buckets.map { bucket in
+            var avgRSSI: Double? = nil
             
             // For drones, calculate average RSSI
             if detectionMode == .drones || detectionMode == .both {
@@ -174,20 +173,26 @@ struct DetectionsStatsView: View {
                 
                 if !aircraftRSSI.isEmpty {
                     let aircraftAvg = aircraftRSSI.reduce(0, +) / Double(aircraftRSSI.count)
-                    
+
                     // If we have both drones and aircraft, average them together
-                    if detectionMode == .both && avgRSSI != -100.0 {
-                        avgRSSI = (avgRSSI + aircraftAvg) / 2.0
+                    if detectionMode == .both, let droneAvg = avgRSSI {
+                        avgRSSI = (droneAvg + aircraftAvg) / 2.0
                     } else {
                         avgRSSI = aircraftAvg
                     }
                 }
             }
-            
-            return SignalTrendPoint(
-                timestamp: bucket.end,
-                averageRSSI: avgRSSI,
-                averageAltitude: avgAltitude
+
+            return avgRSSI
+        }
+
+        let levelled = SeriesSmoother.level(raw)
+
+        return buckets.indices.map { i in
+            SignalTrendPoint(
+                timestamp: buckets[i].end,
+                averageRSSI: levelled[i],
+                averageAltitude: 0.0
             )
         }
     }
@@ -320,40 +325,42 @@ struct DetectionsStatsView: View {
             
             // Show RSSI trend for all modes (drones, aircraft, and both)
             Chart(signalTrendData) { point in
-                // Main signal line with gradient
-                LineMark(
-                    x: .value("Time", point.timestamp),
-                    y: .value("Avg RSSI", point.averageRSSI)
-                )
-                .foregroundStyle(
-                    .linearGradient(
-                        colors: [.red, .orange, .yellow, .green],
-                        startPoint: .bottom,
-                        endPoint: .top
+                if let rssi = point.averageRSSI {
+                    // Main signal line with gradient
+                    LineMark(
+                        x: .value("Time", point.timestamp),
+                        y: .value("Avg RSSI", rssi)
                     )
-                )
-                .lineStyle(StrokeStyle(lineWidth: 3, lineCap: .round, lineJoin: .round))
-                .interpolationMethod(.catmullRom)
-                
-                // Area fill with gradient
-                AreaMark(
-                    x: .value("Time", point.timestamp),
-                    y: .value("Avg RSSI", point.averageRSSI)
-                )
-                .foregroundStyle(
-                    .linearGradient(
-                        colors: [
-                            .red.opacity(0.3),
-                            .orange.opacity(0.2),
-                            .yellow.opacity(0.15),
-                            .green.opacity(0.1)
-                        ],
-                        startPoint: .bottom,
-                        endPoint: .top
+                    .foregroundStyle(
+                        .linearGradient(
+                            colors: [.red, .orange, .yellow, .green],
+                            startPoint: .bottom,
+                            endPoint: .top
+                        )
                     )
-                )
-                .interpolationMethod(.catmullRom)
-                
+                    .lineStyle(StrokeStyle(lineWidth: 3, lineCap: .round, lineJoin: .round))
+                    .interpolationMethod(.monotone)
+
+                    // Area fill with gradient
+                    AreaMark(
+                        x: .value("Time", point.timestamp),
+                        y: .value("Avg RSSI", rssi)
+                    )
+                    .foregroundStyle(
+                        .linearGradient(
+                            colors: [
+                                .red.opacity(0.3),
+                                .orange.opacity(0.2),
+                                .yellow.opacity(0.15),
+                                .green.opacity(0.1)
+                            ],
+                            startPoint: .bottom,
+                            endPoint: .top
+                        )
+                    )
+                    .interpolationMethod(.monotone)
+                }
+
                 // Warning threshold line (stronger signal = closer)
                 RuleMark(y: .value("Warning", -60))
                     .foregroundStyle(.red.opacity(0.5))
@@ -408,7 +415,7 @@ struct DetectionsStatsView: View {
                         )
                     )
                     .lineStyle(StrokeStyle(lineWidth: 3, lineCap: .round, lineJoin: .round))
-                    .interpolationMethod(.catmullRom)
+                    .interpolationMethod(.monotone)
                     
                     AreaMark(
                         x: .value("Time", point.timestamp),
@@ -421,7 +428,7 @@ struct DetectionsStatsView: View {
                             endPoint: .bottom
                         )
                     )
-                    .interpolationMethod(.catmullRom)
+                    .interpolationMethod(.monotone)
                 }
                 
                 if detectionMode == .aircraft || detectionMode == .both {
@@ -437,7 +444,7 @@ struct DetectionsStatsView: View {
                         )
                     )
                     .lineStyle(StrokeStyle(lineWidth: 3, lineCap: .round, lineJoin: .round))
-                    .interpolationMethod(.catmullRom)
+                    .interpolationMethod(.monotone)
                     
                     AreaMark(
                         x: .value("Time", point.timestamp),
@@ -450,7 +457,7 @@ struct DetectionsStatsView: View {
                             endPoint: .bottom
                         )
                     )
-                    .interpolationMethod(.catmullRom)
+                    .interpolationMethod(.monotone)
                 }
             }
             .frame(height: 80)
@@ -784,7 +791,7 @@ struct DetectionsStatsView: View {
     
     private var totalDronesSeen: Int {
         // Count all drone encounters (not aircraft) from storage
-        DroneStorageManager.shared.fetchAllEncounters().filter { !$0.id.hasPrefix("aircraft-") }.count
+        DetectionViewCache.shared.encounterCount()
     }
     
     private var totalAircraftSeen: Int {
@@ -1020,7 +1027,7 @@ private struct TimelineDataPoint: Identifiable {
 private struct SignalTrendPoint: Identifiable {
     let id = UUID()
     let timestamp: Date
-    let averageRSSI: Double
+    let averageRSSI: Double?
     let averageAltitude: Double
 }
 

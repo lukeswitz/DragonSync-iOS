@@ -68,6 +68,33 @@ class Settings: ObservableObject {
             objectWillChange.send()
         }
     }
+    @AppStorage("flightPointRetentionLimit") var flightPointRetentionLimit: Int = 1000 {
+        didSet {
+            objectWillChange.send()
+        }
+    }
+    @AppStorage("flightPointMinIntervalSeconds") var flightPointMinIntervalSeconds: Double = 2.0 {
+        didSet {
+            objectWillChange.send()
+        }
+    }
+    @AppStorage("flightPointMinDistanceMeters") var flightPointMinDistanceMeters: Double = 0.1 {
+        didSet {
+            objectWillChange.send()
+        }
+    }
+    @AppStorage("backgroundDiagnosticsEnabled") var backgroundDiagnosticsEnabled = false {
+        didSet {
+            objectWillChange.send()
+            if backgroundDiagnosticsEnabled {
+                BackgroundDiagnostics.shared.startHeartbeat()
+                PerfHeartbeat.shared.start()
+                MainThreadWatchdog.shared.start()
+            } else {
+                MainThreadWatchdog.shared.stop()
+            }
+        }
+    }
     @AppStorage("multicastPort") var multicastPort: Int = 6969 {
         didSet {
             objectWillChange.send()

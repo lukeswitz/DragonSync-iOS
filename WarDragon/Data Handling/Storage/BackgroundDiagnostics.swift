@@ -79,6 +79,10 @@ final class BackgroundDiagnostics: ObservableObject {
         return dir.appendingPathComponent("bg-diagnostics.json")
     }()
 
+    static var isEnabled: Bool {
+        UserDefaults.standard.bool(forKey: "backgroundDiagnosticsEnabled")
+    }
+
     private init() {
         loadPersisted()
         detectProcessGap()
@@ -89,7 +93,7 @@ final class BackgroundDiagnostics: ObservableObject {
     // MARK: - Heartbeat
 
     func startHeartbeat() {
-        guard heartbeat == nil else { return }
+        guard Self.isEnabled, heartbeat == nil else { return }
         let timer = Timer(timeInterval: heartbeatInterval, repeats: true) { [weak self] _ in
             self?.tick()
         }
@@ -130,6 +134,7 @@ final class BackgroundDiagnostics: ObservableObject {
     // MARK: - Packet flow
 
     func recordPacket(_ source: Source) {
+        guard Self.isEnabled else { return }
         counterLock.lock()
         packetCounts[source.rawValue, default: 0] += 1
         lastPacketAt[source.rawValue] = Date()
@@ -147,6 +152,7 @@ final class BackgroundDiagnostics: ObservableObject {
     // MARK: - Network path
 
     private func startPathMonitor() {
+        guard Self.isEnabled else { return }
         pathMonitor.pathUpdateHandler = { [weak self] path in
             guard let self else { return }
             let described = Self.describe(path)
@@ -208,6 +214,7 @@ final class BackgroundDiagnostics: ObservableObject {
     // MARK: - Recording
 
     func log(_ kind: Kind, _ event: String, _ detail: String = "") {
+        guard Self.isEnabled else { return }
         let state = Self.currentAppState()
         let remaining = Self.currentBackgroundTimeRemaining()
 
@@ -251,6 +258,7 @@ final class BackgroundDiagnostics: ObservableObject {
     }
 
     func flush() {
+        guard Self.isEnabled else { return }
         q.sync { self.persistNow() }
     }
 

@@ -233,12 +233,14 @@ class ZMQHandler: ObservableObject {
         
         connectionMonitorTimer = Timer.scheduledTimer(withTimeInterval: connectionCheckInterval, repeats: true) { [weak self] _ in
             guard let self = self, self.isConnected else { return }
-            
+
             if self.isInBackgroundMode {
                 return
             }
-            
-            self.checkConnectionStatus()
+
+            DispatchQueue.global(qos: .utility).async { [weak self] in
+                self?.checkConnectionStatus()
+            }
         }
         
         if let timer = connectionMonitorTimer {
@@ -267,16 +269,17 @@ class ZMQHandler: ObservableObject {
         
         do {
             isPollingActive = true
-            let items = try poller.poll(timeout: 0.05)
+            _ = try poller.poll(timeout: 50)
             isPollingActive = false
-            
-            if items.isEmpty {
-                print("ZMQ: Connection appears inactive")
+
+            // poll() reports one entry per registered socket regardless of
+            // events, so emptiness proves nothing. Staleness does.
+            let silence = Date().timeIntervalSince(lastMessageTime)
+            if silence > subscriptionTimeout {
+                print("ZMQ: No traffic for \(Int(silence))s, reconnecting")
                 DispatchQueue.main.async { [weak self] in
                     self?.reconnect()
                 }
-            } else {
-                print("ZMQ: Connection appears active")
             }
         } catch let error as SwiftyZeroMQ.ZeroMQError {
             isPollingActive = false
@@ -303,12 +306,20 @@ class ZMQHandler: ObservableObject {
         // ZMQ socket options are not thread-safe; mutating them while the
         // polling thread is mid-recv is undefined behavior. Serialize against
         // the polling loop via pollingLock.
-        pollingLock.lock()
-        defer { pollingLock.unlock() }
-
         let timeout: Int32 = enabled ? 2000 : 500
-        try? telemetrySocket?.setRecvTimeout(timeout)
-        try? statusSocket?.setRecvTimeout(timeout)
+        let apply: () -> Void = { [weak self] in
+            guard let self else { return }
+            self.pollingLock.lock()
+            defer { self.pollingLock.unlock() }
+            try? self.telemetrySocket?.setRecvTimeout(timeout)
+            try? self.statusSocket?.setRecvTimeout(timeout)
+        }
+
+        if Thread.isMainThread {
+            DispatchQueue.global(qos: .utility).async(execute: apply)
+        } else {
+            apply()
+        }
     }
     
     private func configureSocket(_ socket: SwiftyZeroMQ.Socket) throws {
@@ -342,7 +353,7 @@ class ZMQHandler: ObservableObject {
                     }
                     
                     do {
-                        let pollTimeout: Double = self.isInBackgroundMode ? 2.0 : 0.1
+                        let pollTimeout: Double = self.isInBackgroundMode ? 2000 : 100
                         self.isPollingActive = true
                         let items = try poller.poll(timeout: pollTimeout)
                         self.isPollingActive = false
@@ -1526,10 +1537,6 @@ class ZMQHandler: ObservableObject {
         shouldContinueRunning = false
         isReconnecting = false  // Reset reconnection flag
 
-        pollingLock.lock()
-        isPollingActive = false
-        pollingLock.unlock()
-
         connectionMonitorTimer?.invalidate()
         connectionMonitorTimer = nil
 
@@ -1553,7 +1560,12 @@ class ZMQHandler: ObservableObject {
         isConnected = false
         isSubscriptionActive = false
 
-        let cleanup: () -> Void = {
+        let cleanup: () -> Void = { [weak self] in
+            if let self {
+                self.pollingLock.lock()
+                self.isPollingActive = false
+                self.pollingLock.unlock()
+            }
             // Wait for the polling loop to exit (it signals on exit).
             // 1s cap — if loop is wedged we close anyway to avoid leaking ZMQ
             // resources; libzmq tolerates close of a poll-target socket.
@@ -1648,10 +1660,16 @@ extension ZMQHandler {
             return
         }
 
-        pollingLock.lock()
+        guard pollingLock.try() else {
+            print("ZMQ: Poll lock contended, retrying connectIfNeeded shortly")
+            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 0.25) { [weak self] in
+                self?.connectIfNeeded()
+            }
+            return
+        }
         let isCurrentlyPolling = isPollingActive
         pollingLock.unlock()
-        
+
         guard !isCurrentlyPolling else {
             print("ZMQ: Cannot connect while polling is active")
             return

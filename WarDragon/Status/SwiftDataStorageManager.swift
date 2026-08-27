@@ -41,6 +41,29 @@ class SwiftDataStorageManager: ObservableObject {
     }
     
     private var needsSave = false
+    private let maxFlightPointsPerEncounter = 1000
+    private let flightPointTrimSlack = 100
+
+    private var flightPointLimit: Int {
+        guard UserDefaults.standard.object(forKey: "flightPointRetentionLimit") != nil else {
+            return maxFlightPointsPerEncounter
+        }
+        return max(1, UserDefaults.standard.integer(forKey: "flightPointRetentionLimit"))
+    }
+
+    private var flightPointMinInterval: Double {
+        guard UserDefaults.standard.object(forKey: "flightPointMinIntervalSeconds") != nil else {
+            return 2.0
+        }
+        return UserDefaults.standard.double(forKey: "flightPointMinIntervalSeconds")
+    }
+
+    private var flightPointMinDistance: Double {
+        guard UserDefaults.standard.object(forKey: "flightPointMinDistanceMeters") != nil else {
+            return 0.1
+        }
+        return UserDefaults.standard.double(forKey: "flightPointMinDistanceMeters")
+    }
     private var saveTimer: Timer?
     private var pendingCacheUpdates: Set<String> = []
     private var cacheUpdateTimer: Timer?
@@ -187,6 +210,24 @@ class SwiftDataStorageManager: ObservableObject {
         }
     }
     
+    private func trimFlightPoints(_ encounter: StoredDroneEncounter, context: ModelContext) {
+        let limit = flightPointLimit
+        guard encounter.flightPoints.count > limit + flightPointTrimSlack else { return }
+
+        let regular = encounter.flightPoints.filter { !$0.isProximityPoint }
+        guard regular.count > limit else { return }
+
+        let doomed = regular.sorted { $0.timestamp < $1.timestamp }
+            .prefix(regular.count - limit)
+        let doomedIds = Set(doomed.map { ObjectIdentifier($0) })
+
+        encounter.flightPoints.removeAll { doomedIds.contains(ObjectIdentifier($0)) }
+        for point in doomed { context.delete(point) }
+        needsSave = true
+
+        logger.info("Trimmed \(doomedIds.count) flight points from \(encounter.id)")
+    }
+
     private func saveIfNeeded() {
         guard needsSave, let context = modelContext else { return }
         guard context.hasChanges else {
@@ -439,7 +480,7 @@ class SwiftDataStorageManager: ObservableObject {
                 )
                 let timeGap = newPoint.timestamp - lastPoint.timestamp
                 
-                if distance > 0.1 || timeGap > 2 {
+                if distance > flightPointMinDistance || timeGap > flightPointMinInterval {
                     encounter.flightPoints.append(newPoint)
                     didAddPoint = true
                 } else {
@@ -449,8 +490,12 @@ class SwiftDataStorageManager: ObservableObject {
                 encounter.flightPoints.append(newPoint)
                 didAddPoint = true
             }
+
+            if didAddPoint {
+                trimFlightPoints(encounter, context: context)
+            }
         }
-        
+
         // Add proximity point if no flight point added
         if !didAddPoint, let rssi = message.rssi, rssi != 0 {
             if let monitorStatus = monitorStatus {
@@ -824,6 +869,7 @@ class SwiftDataStorageManager: ObservableObject {
             logger.info("Deleted encounter and cleared caches: \(encounterId)")
             
             Task { @MainActor in
+                DetectionViewCache.shared.invalidateEncounter(encounterId)
                 self.objectWillChange.send()
                 DroneStorageManager.shared.objectWillChange.send()
             }
@@ -844,6 +890,7 @@ class SwiftDataStorageManager: ObservableObject {
             macToIdCache.removeAll()
             caaToIdCache.removeAll()
             doNotTrackCache.removeAll()
+            DetectionViewCache.shared.invalidateAll()
         }
         
         do {

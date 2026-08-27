@@ -35,8 +35,15 @@ struct WarDragonApp: App {
         _spectrumViewModel = StateObject(wrappedValue: spectrumVM)
         _cotViewModel = StateObject(wrappedValue: cotVM)
         
+        #if DEBUG
+        SeriesSmoother.selfCheck()
+        #endif
+
         Task { @MainActor in
             OpenSkyService.shared.cotViewModel = cotVM
+            PerfHeartbeat.shared.cotViewModel = cotVM
+            PerfHeartbeat.shared.start()
+            MainThreadWatchdog.shared.start()
         }
     }
     

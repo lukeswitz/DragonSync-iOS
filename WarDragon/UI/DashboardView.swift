@@ -22,6 +22,9 @@ struct DashboardView: View {
     }
     
     var body: some View {
+        #if DEBUG
+        let _ = PerfHeartbeat.shared.count("DashboardView")
+        #endif
         ScrollView {
             VStack(spacing: 20) {
                 // System Status Card

@@ -140,6 +140,11 @@ final class BackgroundManager: @unchecked Sendable {
                             ZMQHandler.shared.connectIfNeeded()
                         }
                     }
+                    self.supervisionCounter += 1
+                    if self.supervisionCounter >= self.supervisionInterval {
+                        self.supervisionCounter = 0
+                        await MainActor.run { self.cotViewModel?.verifyZMQSubscription() }
+                    }
                 }
 
                 try? await Task.sleep(nanoseconds: 100_000_000) // 0.1 seconds

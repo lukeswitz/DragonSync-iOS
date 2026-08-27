@@ -122,7 +122,9 @@ struct AircraftListView: View {
             }
         }
         .navigationDestination(isPresented: $showUnifiedMap) {
-            UnifiedAircraftMapView(cotViewModel: cotViewModel)
+            LazyView {
+                UnifiedAircraftMapView(cotViewModel: cotViewModel)
+            }
         }
     }
     

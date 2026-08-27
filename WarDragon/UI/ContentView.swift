@@ -12,6 +12,16 @@ import CoreLocation
 import MapKit
 import Charts
 
+struct LazyView<Content: View>: View {
+    private let build: () -> Content
+
+    init(@ViewBuilder _ build: @escaping () -> Content) {
+        self.build = build
+    }
+
+    var body: Content { build() }
+}
+
 struct ContentView: View {
     @Environment(\.modelContext) private var modelContext
     @EnvironmentObject private var statusViewModel: StatusViewModel
@@ -52,6 +62,9 @@ struct ContentView: View {
     
 
     var body: some View {
+        #if DEBUG
+        let _ = PerfHeartbeat.shared.count("ContentView")
+        #endif
         TabView(selection: $selectedTab) {
             dashboardTab
             detectionsTab
@@ -67,6 +80,7 @@ struct ContentView: View {
             handleListeningChange()
         }
         .onChange(of: selectedTab) { oldValue, newValue in
+            PerfHeartbeat.shared.mark("tab \(oldValue)->\(newValue)")
             handleTabChange(from: oldValue, to: newValue)
             
             if oldValue == newValue {
@@ -376,18 +390,7 @@ struct ContentView: View {
             return []
         }
         
-        guard let encounter = DroneStorageManager.shared.fetchEncounter(id: uid) else {
-            return []
-        }
-        
-        let sortedPoints = encounter.flightPath
-            .filter { !$0.isProximityPoint }
-            .filter { !($0.latitude == 0 && $0.longitude == 0) }
-            .sorted { $0.timestamp < $1.timestamp }
-        
-        return sortedPoints.map { point in
-            CLLocationCoordinate2D(latitude: point.latitude, longitude: point.longitude)
-        }
+        return DetectionViewCache.shared.flightPath(for: uid)
     }
     
     @ViewBuilder
@@ -467,13 +470,15 @@ struct ContentView: View {
     }
     
     private var unifiedMapDestination: some View {
-        LiveMapView(
-            cotViewModel: cotViewModel,
-            initialMessage: getInitialMessageForMap(),
-            filterMode: convertToFilterMode(detectionMode)
-        )
-        .navigationTitle(mapNavigationTitle)
-        .navigationBarTitleDisplayMode(.inline)
+        LazyView {
+            LiveMapView(
+                cotViewModel: cotViewModel,
+                initialMessage: getInitialMessageForMap(),
+                filterMode: convertToFilterMode(detectionMode)
+            )
+            .navigationTitle(mapNavigationTitle)
+            .navigationBarTitleDisplayMode(.inline)
+        }
     }
     
     private func convertToFilterMode(_ mode: DetectionMode) -> LiveMapView.FilterMode {
@@ -934,11 +939,7 @@ struct ContentView: View {
         // Count drones that have recent updates (not stale)
         // You can adjust this logic based on your DroneEncounter structure
         cotViewModel.parsedMessages.filter { message in
-            guard let encounter = DroneStorageManager.shared.fetchEncounter(id: message.uid) else {
-                return true // If no encounter, assume active (just detected)
-            }
-            // Consider active if last seen within 30 seconds
-            return Date().timeIntervalSince(encounter.lastSeen) < 30
+            Date().timeIntervalSince(message.lastUpdated) < 30
         }.count
     }
     
@@ -1318,17 +1319,8 @@ private struct LiveMapPreview: View {
             return []
         }
         
-        guard let encounter = DroneStorageManager.shared.fetchEncounter(id: uid) else {
-            return []
-        }
-        
-        let sortedPoints = encounter.flightPath
-            .filter { !$0.isProximityPoint }
-            .filter { !($0.latitude == 0 && $0.longitude == 0) }
-            .sorted { $0.timestamp < $1.timestamp }
-        
-        var coordinates = sortedPoints.map { $0.coordinate }
-        
+        var coordinates = DetectionViewCache.shared.flightPath(for: uid)
+
         if let currentMessage = cotViewModel.parsedMessages.first(where: { $0.uid == uid }),
            let currentCoord = currentMessage.coordinate,
            currentCoord.latitude != 0 && currentCoord.longitude != 0 {
